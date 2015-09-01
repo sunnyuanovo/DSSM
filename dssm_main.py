@@ -116,25 +116,25 @@ class CosineLayer(object):
 
     # for train, we need to compute a cosine matrix for (Q,D), then compute a final score
     def forward_train(self):   
-        n_mbsize = self.Q.shape[0] # get mbsize as int, such as 1024
         
         # Next, we need to generate 2 lists of index
         # these 2 lists together have mbsize*(neg+1) element
         # after reshape, it should be (mbsize, neg+1) matrix
         index_Q = []
         index_D = []
-        for tmp_index in range(n_mbsize):
+        
+        for tmp_index in range(self.n_mbsize):
             # for current sample, it's positive pair is itself
             index_Q += [tmp_index] * (self.n_neg+1)
             index_D += [tmp_index]
-            index_D += [(tmp_index+self.n_shift+y)%n_mbsize for y in range(self.n_neg)]
+            index_D += [(tmp_index+self.n_shift+y)%self.n_mbsize for y in range(self.n_neg)]
         
-        components, updates = theano.scan(ComputeCosineBetweenTwoVectors,
+        components, updates = theano.scan(self.ComputeCosineBetweenTwoVectors,
                                   outputs_info=None,
                                   sequences=[index_Q, index_D],
-                                  non_sequences=[Q,D])
+                                  non_sequences=[self.Q,self.D])
         
-        components_reshape = T.reshape(components, (n_mbsize, self.n_neg+1))
+        components_reshape = T.reshape(components, (self.n_mbsize, self.n_neg+1))
         
         # for this matrix, each line is a prob distribution right now.
         components_reshape_softmax = T.nnet.softmax(components_reshape)
@@ -147,24 +147,22 @@ class CosineLayer(object):
 
     # for test, we only need to compute a cosine vector for (Q,D)
     def forward_test(self):   
-        n_mbsize = self.Q.shape[0] # get mbsize as int, such as 1024
-        
         # Next, we need to generate 2 lists of index
         # both are like (0, 1,   ..., 1023)
-        index_Q = numpy.arange(n_mbsize)
-        index_D = numpy.arange(n_mbsize)
+        index_Q = numpy.arange(self.n_mbsize)
+        index_D = numpy.arange(self.n_mbsize)
 
         # components is a vector         
-        components, updates = theano.scan(ComputeCosineBetweenTwoVectors,
+        components, updates = theano.scan(self.ComputeCosineBetweenTwoVectors,
                                   outputs_info=None,
                                   sequences=[index_Q, index_D],
-                                  non_sequences=[Q,D])
+                                  non_sequences=[self.Q,self.D])
         
         
         # get the final output
         self.output_test = components
         
-    def __init__(self, Q, D, n_neg, n_shift):
+    def __init__(self, Q, D, n_mbsize, n_neg, n_shift):
         """ Initialize the parameters of the logistic regression
 
         :type inputQ and inputD: theano.tensor.TensorType
@@ -182,8 +180,16 @@ class CosineLayer(object):
         # We store a flattened (vector) version of target as y, which is easier to handle
         self.Q = Q
         self.D = D
+        self.n_mbsize = n_mbsize
         self.n_neg = n_neg
         self.n_shift = n_shift
+        
+        print(type(Q))
+        print(type(D))
+        print(type(n_mbsize))
+        print(type(n_neg))
+        print(type(n_shift))
+        
         
         self.forward_train()
         self.forward_train()
@@ -203,18 +209,18 @@ def load_data():
                         high=1.0,
                         size=(8, 2)
                     )
-                ,config.floatX))
+                ,theano.config.floatX))
                   , theano.shared(numpy.asarray(
                     rng.uniform(
                         low=0.,
                         high=1.0,
                         size=(8, 2)
                     )
-                ,config.floatX))  ]  
+                ,theano.config.floatX))  ]  
     return dataset
 
 class MLP(object):
-    def __init__(self, rng, input_Q, input_D, n_in, n_hidden, n_out, activation=T.tanh):
+    def __init__(self, rng, input_Q, input_D, n_mbsize, n_in, n_hidden, n_out, activation=T.tanh):
         self.input_Q = input_Q
         self.input_D = input_D
 
@@ -235,7 +241,7 @@ class MLP(object):
             self.hidden_layers_Q.append(hidden_layer)
 
             # prepare variables for next layer
-            layer_input = self.hidden_layer_Q.output # this is a matrix
+            layer_input = hidden_layer.output # this is a matrix
             layer_n_in = nh
             
         # Next, build hidden layers for D
@@ -253,13 +259,14 @@ class MLP(object):
             self.hidden_layers_D.append(hidden_layer)
 
             # prepare variables for next layer
-            layer_input = self.hidden_layer_D.output
+            layer_input = hidden_layer.output
             layer_n_in = nh
         
 
         self.cosine_layer = CosineLayer(
             Q = self.hidden_layers_Q[-1].output,
             D = self.hidden_layers_D[-1].output, 
+            n_mbsize = n_mbsize,
             n_neg = 1, 
             n_shift = 1
             )
@@ -358,6 +365,7 @@ def test_sim(learning_rate=0.01, L1_reg=0.00, L2_reg=0.0001, n_epochs=1000,
                     rng=rng,
                     input_Q=x,
                     input_D=y,
+                    n_mbsize = 4,
                     n_in=n_in,
                     n_hidden=[4],
                     n_out=n_out)
@@ -372,4 +380,5 @@ def test_sim(learning_rate=0.01, L1_reg=0.00, L2_reg=0.0001, n_epochs=1000,
 
 if __name__ == '__main__':
     print "Git test\n"
-#    test_sim()
+    print theano.config.floatX
+    test_sim()
