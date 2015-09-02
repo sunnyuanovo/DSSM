@@ -115,19 +115,7 @@ class CosineLayer(object):
         return qddot/(q_norm * d_norm)
 
     # for train, we need to compute a cosine matrix for (Q,D), then compute a final score
-    def forward_train(self):   
-        
-        # Next, we need to generate 2 lists of index
-        # these 2 lists together have mbsize*(neg+1) element
-        # after reshape, it should be (mbsize, neg+1) matrix
-        index_Q = []
-        index_D = []
-        
-        for tmp_index in range(self.n_mbsize):
-            # for current sample, it's positive pair is itself
-            index_Q += [tmp_index] * (self.n_neg+1)
-            index_D += [tmp_index]
-            index_D += [(tmp_index+self.n_shift+y)%self.n_mbsize for y in range(self.n_neg)]
+    def forward_train(self, index_Q, index_D):   
         
         components, updates = theano.scan(self.ComputeCosineBetweenTwoVectors,
                                   outputs_info=None,
@@ -146,12 +134,7 @@ class CosineLayer(object):
         self.output_train = - column1.sum()
 
     # for test, we only need to compute a cosine vector for (Q,D)
-    def forward_test(self):   
-        # Next, we need to generate 2 lists of index
-        # both are like (0, 1,   ..., 1023)
-        index_Q = numpy.arange(self.n_mbsize)
-        index_D = numpy.arange(self.n_mbsize)
-
+    def forward_test(self, index_Q, index_D):   
         # components is a vector         
         components, updates = theano.scan(self.ComputeCosineBetweenTwoVectors,
                                   outputs_info=None,
@@ -162,7 +145,7 @@ class CosineLayer(object):
         # get the final output
         self.output_test = components
         
-    def __init__(self, Q, D, n_mbsize, n_neg, n_shift):
+    def __init__(self, Q, D, n_mbsize, n_neg, n_shift, indexes):
         """ Initialize the parameters of the logistic regression
 
         :type inputQ and inputD: theano.tensor.TensorType
@@ -183,16 +166,26 @@ class CosineLayer(object):
         self.n_mbsize = n_mbsize
         self.n_neg = n_neg
         self.n_shift = n_shift
+        self.indexes = indexes
+
+
+        # Next, we need to generate 2 lists of index
+        # these 2 lists together have mbsize*(neg+1) element
+        # after reshape, it should be (mbsize, neg+1) matrix
+#        index_Q = []
+#        index_D = []
         
-        print(type(Q))
-        print(type(D))
-        print(type(n_mbsize))
-        print(type(n_neg))
-        print(type(n_shift))
+#        for tmp_index in range(self.n_mbsize):
+#            # for current sample, it's positive pair is itself
+#            index_Q += [tmp_index] * (self.n_neg+1)
+#            index_D += [tmp_index]
+#            index_D += [(tmp_index+self.n_shift+y)%self.n_mbsize for y in range(self.n_neg)]
         
-        
-        self.forward_train()
-        self.forward_train()
+        self.forward_train(indexes[0], indexes[1])
+
+#        index_Q = numpy.arange(self.n_mbsize)
+#        index_D = numpy.arange(self.n_mbsize)
+        self.forward_test(indexes[2], indexes[3])
         
         # For this node, we don't have W or b as parameters
         # Therefore, we don't set params in this node
@@ -219,10 +212,46 @@ def load_data():
                 ,theano.config.floatX))  ]  
     return dataset
 
+def generate_index(n_mbsize, n_neg, n_shift):
+        # Next, we need to generate 2 lists of index
+        # these 2 lists together have mbsize*(neg+1) element
+        # after reshape, it should be (mbsize, neg+1) matrix
+        index_train_Q = numpy.arange(0)
+        index_train_D = numpy.arange(0)
+        
+        for tmp_index in range(n_mbsize):
+            # for current sample, it's positive pair is itself
+            index_train_Q = numpy.append(index_train_Q, [tmp_index] * (n_neg+1))
+            
+            index_train_D = numpy.append(index_train_D, [tmp_index])
+            index_train_D = numpy.append(index_train_D, [(tmp_index+n_shift+y)%n_mbsize for y in range(n_neg)])
+            
+#            index_train_D += [tmp_index]
+#            index_train_D += [(tmp_index+n_shift+y)%n_mbsize for y in range(n_neg)]
+        
+        index_test_Q = numpy.arange(n_mbsize)
+        index_test_D = numpy.arange(n_mbsize)
+#        theano.tensor.as_tensor_variable(x, name=None, ndim=None)
+
+        indexes = [ theano.shared(index_train_Q), theano.shared(index_train_Q), theano.shared(index_test_Q), theano.shared(index_test_D)]
+        return indexes
+    
+
+
 class MLP(object):
-    def __init__(self, rng, input_Q, input_D, n_mbsize, n_in, n_hidden, n_out, activation=T.tanh):
+    def __init__(self, rng, input_Q, input_D, n_mbsize, n_in, n_hidden, n_out, indexes, activation=T.tanh):
         self.input_Q = input_Q
         self.input_D = input_D
+        
+        
+        print(type(input_Q))
+        print(type(input_D))
+        print(type(n_mbsize))
+        print(type(n_in))
+        print(type(n_hidden))
+        print(type(n_out))
+        print(type(indexes))
+        print(type(activation))
 
         # Build all necessary hidden layers and chain them
         # in current step, we just use one hidden layer, i.e. n_hidden = 1
@@ -268,7 +297,8 @@ class MLP(object):
             D = self.hidden_layers_D[-1].output, 
             n_mbsize = n_mbsize,
             n_neg = 1, 
-            n_shift = 1
+            n_shift = 1,
+            indexes = indexes
             )
 
         
@@ -348,27 +378,29 @@ def test_sim(learning_rate=0.01, L1_reg=0.00, L2_reg=0.0001, n_epochs=1000,
    """
     if not  dataset: 
         dataset = load_data()
+        indexes = generate_index(4, 1, 1)
 
     train_set_x = dataset[0]
     train_set_y = dataset[1]
     
     
     rng = numpy.random.RandomState(1234)
-    x = T.matrix('x')
+#    x = T.matrix('x')
     # The labels coming from Fuel are in a "column" format
-    y = T.matrix('y')
+#    y = T.matrix('y')
 
     n_in = 2
     n_out = 2
 
     mlp_model = MLP(
                     rng=rng,
-                    input_Q=x,
-                    input_D=y,
+                    input_Q=train_set_x,
+                    input_D=train_set_y,
                     n_mbsize = 4,
                     n_in=n_in,
                     n_hidden=[4],
-                    n_out=n_out)
+                    n_out=n_out,
+                    indexes=indexes)
 
     lr = numpy.float32(0.1)
 
@@ -379,6 +411,4 @@ def test_sim(learning_rate=0.01, L1_reg=0.00, L2_reg=0.0001, n_epochs=1000,
 
 
 if __name__ == '__main__':
-    print "Git test\n"
-    print theano.config.floatX
     test_sim()
